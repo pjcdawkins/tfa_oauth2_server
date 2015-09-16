@@ -5,30 +5,17 @@
  */
 
 /**
- * Implements hook_init().
+ * Implements hook_oauth2_server_token().
  */
-function tfa_oauth2_server_init() {
-  if ($_GET['q'] !== 'oauth2/token' || !variable_get('tfa_enabled', 0)) {
-    return;
-  }
-
-  $request = OAuth2\Request::createFromGlobals();
+function tfa_oauth2_server_oauth2_server_token(OAuth2Server $server, OAuth2\Request $request, OAuth2\Response $response) {
   // Only act for the password credentials grant type.
   if ($request->request('grant_type') !== 'password') {
     return;
   }
 
-  // Get the client and use it to load the server and initialize the server.
-  $client_credentials = oauth2_server_get_client_credentials($request);
-  $server = NULL;
-  if ($client_credentials) {
-    $client = oauth2_server_client_load($client_credentials['client_id']);
-    if ($client) {
-      $server = oauth2_server_load($client->server);
-    }
-  }
-  if (!$server) {
-    watchdog('tfa_oauth2_server', 'Failed to identify server', array(), WATCHDOG_ERROR);
+  // Ignore failed password credentials requests. OAuth2 Server will throw the
+  // correct error in that case.
+  if ($response->getStatusCode() != 200) {
     return;
   }
 
@@ -62,35 +49,77 @@ function tfa_oauth2_server_init() {
     return;
   }
 
-  // Initialize the server.
-  $response = new OAuth2\Response();
-  $oauth2_server = oauth2_server_start($server);
-  /** @var \OAuth2\Response $response */
-  $response = $oauth2_server->handleTokenRequest($request, $response);
+  // Get TFA information about the account.
+  $context = $tfa->getContext();
 
-  // Ignore failed password credentials requests.
-  if ($response->getStatusCode() != 200) {
-    return;
+  // Log an error if there are no validate plugins.
+  if (empty($context['plugins']['validate'])) {
+    watchdog('tfa_oauth2_server', 'No validation plugin enabled for account @uid', array('@uid' => $account->uid), WATCHDOG_ERROR);
   }
 
-  // Exit with a custom header.
-  drupal_add_http_header('status', '403 Forbidden');
-  drupal_add_http_header('X-Drupal-TFA', 'required');
+  // Process a provided TOTP code.
+  if ($request->headers('X_Drupal_TFA') !== NULL
+    && isset($context['plugins']['validate'])
+    && $context['plugins']['validate'] === 'tfa_basic_totp') {
+    $tfa->begin();
 
-  // Clear the TFA flood level for the user.
-  $identifier = variable_get('user_failed_login_identifier_uid_only', FALSE) ? $account->uid : $account->uid . '-' . ip_address();
-  flood_clear_event('tfa_user', $identifier);
+    // Check flood tables.
+    $identifier = variable_get('user_failed_login_identifier_uid_only', FALSE) ? $account->uid : $account->uid . '-' . ip_address();
+    $user_window = variable_get('tfa_user_window', 900);
+    if (!flood_is_allowed('tfa_user', variable_get('tfa_user_threshold', 6), $user_window, $identifier)) {
+      module_invoke_all('tfa_flood_hit', $tfa->getContext());
+      tfa_oauth2_server_error(array(
+        t('You have reached the threshold for incorrect code entry attempts. Please try again in !time minutes.', array('!time' => round($user_window / 60))
+      )));
+      return;
+    }
 
-  // Output an appropriate error message in JSON.
+    // Fake a TFA form to check the authorization code.
+    $form = array();
+    $form_state = array();
+    $form_state['values']['code'] = $request->headers('X_Drupal_TFA');
+    $tfa->validateForm($form, $form_state);
+    $errors = $tfa->getErrorMessages();
+
+    // Success. Clear the TFA flood level for the user.
+    if (empty($errors)) {
+      flood_clear_event('tfa_user', $identifier);
+
+      return NULL;
+    }
+    else {
+      // Failure. Register a flood event.
+      flood_register_event('tfa_user', variable_get('tfa_user_window', 900), $identifier);
+      tfa_oauth2_server_error($errors);
+      return;
+    }
+
+  }
+
+  tfa_oauth2_server_error(array(t('Two-factor authentication is required.')));
+}
+
+/**
+ * Send an error message in JSON.
+ *
+ * @param array $messages
+ * @param string $error
+ * @param string $status
+ */
+function tfa_oauth2_server_error(array $messages = array(), $error = 'access_denied', $status = '403 Forbidden') {
+  drupal_add_http_header('status', $status);
+  drupal_add_http_header('X-Drupal-TFA', 'required, type=totp');
+
   $response_array = array(
-    'error' => 'access_denied',
-    'error_description' => t('Two-factor authentication is required'),
+    'error' => $error,
   );
-  if ($state = $request->request('state')) {
-    $response_array['state'] = $state;
+  if (!empty($messages)) {
+    $response_array['error_description'] = implode(' ', $messages);
   }
-  drupal_json_output($response_array);
+  if (isset($_REQUEST['state'])) {
+    $response_array['state'] = $_REQUEST['state'];
+  }
 
-  drupal_send_headers();
+  drupal_json_output($response_array);
   drupal_exit();
 }
