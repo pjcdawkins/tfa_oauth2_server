@@ -1,0 +1,96 @@
+<?php
+/**
+ * @file
+ * TFA OAuth2 Server module.
+ */
+
+/**
+ * Implements hook_init().
+ */
+function tfa_oauth2_server_init() {
+  if ($_GET['q'] !== 'oauth2/token' || !variable_get('tfa_enabled', 0)) {
+    return;
+  }
+
+  $request = OAuth2\Request::createFromGlobals();
+  // Only act for the password credentials grant type.
+  if ($request->request('grant_type') !== 'password') {
+    return;
+  }
+
+  // Get the client and use it to load the server and initialize the server.
+  $client_credentials = oauth2_server_get_client_credentials($request);
+  $server = NULL;
+  if ($client_credentials) {
+    $client = oauth2_server_client_load($client_credentials['client_id']);
+    if ($client) {
+      $server = oauth2_server_load($client->server);
+    }
+  }
+  if (!$server) {
+    watchdog('tfa_oauth2_server', 'Failed to identify server', array(), WATCHDOG_ERROR);
+    return;
+  }
+
+  // Load the account from the request parameters.
+  $account = user_load_by_name($request->request('username'));
+  if (!$account) {
+    $account = user_load_by_mail($request->request('username'));
+  }
+  if (!$account) {
+    watchdog('tfa_oauth2_server', 'Failed to identify account', array(), WATCHDOG_ERROR);
+    return;
+  }
+
+  // Return early if user has successfully gone through TFA process or if
+  // a login plugin specifically allows it.
+  if (tfa_login_allowed($account)) {
+    return;
+  }
+
+  $tfa = tfa_get_process($account);
+  // Check if TFA has been set up by the account.
+  $require_tfa = $tfa->ready();
+
+  // Allow other modules to act on login when account is not set up for TFA.
+  if (empty($require_tfa)) {
+    $require_tfa = array_filter(module_invoke_all('tfa_ready_require', $account));
+  }
+
+  // Ignore accounts that don't have TFA set up.
+  if (empty($require_tfa)) {
+    return;
+  }
+
+  // Initialize the server.
+  $response = new OAuth2\Response();
+  $oauth2_server = oauth2_server_start($server);
+  /** @var \OAuth2\Response $response */
+  $response = $oauth2_server->handleTokenRequest($request, $response);
+
+  // Ignore failed password credentials requests.
+  if ($response->getStatusCode() != 200) {
+    return;
+  }
+
+  // Exit with a custom header.
+  drupal_add_http_header('status', '403 Forbidden');
+  drupal_add_http_header('X-Drupal-TFA', 'required');
+
+  // Clear the TFA flood level for the user.
+  $identifier = variable_get('user_failed_login_identifier_uid_only', FALSE) ? $account->uid : $account->uid . '-' . ip_address();
+  flood_clear_event('tfa_user', $identifier);
+
+  // Output an appropriate error message in JSON.
+  $response_array = array(
+    'error' => 'access_denied',
+    'error_description' => t('Two-factor authentication is required'),
+  );
+  if ($state = $request->request('state')) {
+    $response_array['state'] = $state;
+  }
+  drupal_json_output($response_array);
+
+  drupal_send_headers();
+  drupal_exit();
+}

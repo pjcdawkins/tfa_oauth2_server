@@ -1,0 +1,5 @@
+name = TFA OAuth2 Server
+description = Integrates TFA with the OAuth2 Server module.
+core = 7.x
+dependencies[] = tfa
+dependencies[] = oauth2_server
