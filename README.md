@@ -23,11 +23,11 @@ If the password is incorrect, then the normal OAuth 2.0 error is sent.
 
 If the password is correct, and the user has TFA enabled, then a 403 response is sent:
 ```
-403 Forbidden
+401 Unauthorized
 Content-Type: application/json
-X-Drupal-TFA: required, type=totp
+X-Drupal-TFA: required, schemes=totp
 
-{"error":"access_denied", "error_description": "Two-factor authentication is required"}
+{"error":"invalid_grant", "error_description": "Two-factor authentication is required"}
 ```
 
 The initial request should be repeated, with the current TOTP code included:

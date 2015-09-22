@@ -106,9 +106,9 @@ function tfa_oauth2_server_oauth2_server_token(OAuth2Server $server, OAuth2\Requ
  * @param string $error
  * @param string $status
  */
-function tfa_oauth2_server_error(array $messages = array(), $error = 'access_denied', $status = '403 Forbidden') {
+function tfa_oauth2_server_error(array $messages = array(), $error = 'invalid_grant', $status = '401 Unauthorized') {
   drupal_add_http_header('status', $status);
-  drupal_add_http_header('X-Drupal-TFA', 'required, type=totp');
+  drupal_add_http_header('X-Drupal-TFA', 'required, schemes=totp');
 
   $response_array = array(
     'error' => $error,
