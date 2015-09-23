@@ -5,8 +5,10 @@ A Drupal module to integrate [TFA](https://www.drupal.org/project/tfa) with [OAu
 
 This interrupts the Password Credentials ('password') grant type for users who have enabled TFA.
 
-**Currently, this requires a patch to OAuth2 Server:
-https://www.drupal.org/files/issues/oauth2_server-token_hook-2571265-2.patch**
+**Currently, this requires the latest dev version of OAuth2 Server**
+
+Or apply this patch:
+https://www.drupal.org/files/issues/oauth2_server-token_hook-2571265-2.patch
 
 ## Flow
 The client requests a token using password credentials, as normal:
